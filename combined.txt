@@ -1,0 +1,1298 @@
+################################################################################
+# File Path: a.py
+# File Content:
+----------------------------------------
+
+import os
+import shutil
+from pathlib import Path
+
+def write_file(filepath: str, content: str):
+    """Write content to a file, creating directories if needed."""
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(filepath, 'w') as f:
+        f.write(content)
+    print(f"Created: {filepath}")
+
+def create_project_structure():
+    """Create the entire project structure."""
+    
+    # First, clean up if directory exists
+    if os.path.exists('file_sync'):
+        shutil.rmtree('file_sync')
+    
+    # Create main project directory
+    os.makedirs('file_sync')
+    os.chdir('file_sync')
+    
+    # Create the basic directory structure
+    directories = [
+        'src/claude_sync',
+        'src/claude_sync/api',
+        'src/claude_sync/core',
+        'src/claude_sync/cli',
+        'src/claude_sync/utils',
+    ]
+    
+    for directory in directories:
+        os.makedirs(directory)
+        # Create __init__.py in each directory
+        write_file(f"{directory}/__init__.py", "")
+
+    # Write main package __init__.py
+    init_content = '''from claude_sync.core.syncer import FileSyncer
+
+__version__ = "0.1.0"
+__all__ = ["FileSyncer"]
+'''
+    write_file('src/claude_sync/__init__.py', init_content)
+
+    # Write API client
+    api_client_content = '''import os
+import requests
+from typing import List, Dict
+
+class APIClient:
+    def __init__(self, config: dict):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update({
+            'accept': '*/*',
+            'accept-language': 'en-US,en;q=0.9',
+            'content-type': 'application/json',
+            'origin': self.config['base_url'],
+            'referer': f"{self.config['base_url']}/project/{self.config['project_id']}"
+        })
+        self.session.cookies.set('sessionKey', config['session_key'])
+
+    def upload_file(self, filepath: str) -> dict:
+        url = f"{self.config['base_url']}/api/organizations/{self.config['organization_id']}/projects/{self.config['project_id']}/docs"
+        
+        with open(filepath, 'r') as f:
+            content = f.read()
+            
+        data = {
+            "file_name": os.path.basename(filepath),
+            "content": content
+        }
+        
+        response = self.session.post(url, json=data)
+        response.raise_for_status()
+        return response.json()
+
+    def list_remote_files(self) -> List[dict]:
+        url = f"{self.config['base_url']}/api/organizations/{self.config['organization_id']}/projects/{self.config['project_id']}/docs"
+        response = self.session.get(url)
+        response.raise_for_status()
+        return response.json()
+'''
+    write_file('src/claude_sync/api/client.py', api_client_content)
+
+    # Write config manager
+    config_manager_content = '''import json
+import os
+from typing import Dict
+
+class ConfigManager:
+    def __init__(self, config_path: str = ".sync_config.json"):
+        self.config_path = config_path
+        self.config = self._load_config()
+
+    def _load_config(self) -> Dict:
+        if os.path.exists(self.config_path):
+            with open(self.config_path, 'r') as f:
+                return json.load(f)
+        return self._create_initial_config()
+
+    def _create_initial_config(self) -> Dict:
+        print("No config file found. Please provide the following information:")
+        config = {
+            'organization_id': input("Organization ID: ").strip(),
+            'project_id': input("Project ID: ").strip(),
+            'base_url': input("Base URL (default: https://claude.ai): ").strip() or "https://claude.ai",
+            'session_key': input("Session Key: ").strip()
+        }
+        
+        with open(self.config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        print(f"Config file created at {self.config_path}")
+        return config
+'''
+    write_file('src/claude_sync/core/config_manager.py', config_manager_content)
+
+    # Write file tracker
+    file_tracker_content = '''import json
+import os
+import hashlib
+from datetime import datetime
+from typing import Dict
+
+class FileTracker:
+    def __init__(self, track_file: str = ".sync_track.json"):
+        self.track_file = track_file
+        self.tracking_data = self._load_tracking_data()
+
+    def _load_tracking_data(self) -> Dict:
+        if os.path.exists(self.track_file):
+            with open(self.track_file, 'r') as f:
+                return json.load(f)
+        return {}
+
+    def _save_tracking_data(self):
+        with open(self.track_file, 'w') as f:
+            json.dump(self.tracking_data, f, indent=2)
+
+    def get_file_hash(self, filepath: str) -> str:
+        with open(filepath, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()
+
+    def update_file_sync(self, filepath: str, sync_status: bool = True):
+        self.tracking_data[filepath] = {
+            'last_sync_time': datetime.now().isoformat(),
+            'last_hash': self.get_file_hash(filepath),
+            'sync_status': sync_status
+        }
+        self._save_tracking_data()
+
+    def needs_sync(self, filepath: str) -> bool:
+        if filepath not in self.tracking_data:
+            return True
+        
+        current_hash = self.get_file_hash(filepath)
+        return current_hash != self.tracking_data[filepath]['last_hash']
+'''
+    write_file('src/claude_sync/core/file_tracker.py', file_tracker_content)
+
+    # Write syncer
+    syncer_content = '''import os
+from typing import Dict, Set
+from claude_sync.api.client import APIClient
+from claude_sync.core.config_manager import ConfigManager
+from claude_sync.core.file_tracker import FileTracker
+from claude_sync.utils.ignore_parser import GitignoreParser
+
+class FileSyncer:
+    def __init__(self):
+        self.config_manager = ConfigManager()
+        self.file_tracker = FileTracker()
+        self.ignore_parser = GitignoreParser()
+        self.api_client = APIClient(self.config_manager.config)
+
+    def get_local_files(self) -> Set[str]:
+        files = set()
+        for root, _, filenames in os.walk('.'):
+            for filename in filenames:
+                filepath = os.path.relpath(os.path.join(root, filename))
+                if not self.ignore_parser.should_ignore(filepath):
+                    files.add(filepath)
+        return files
+
+    def get_sync_status(self) -> Dict[str, dict]:
+        local_files = self.get_local_files()
+        status = {}
+        
+        for filepath in local_files:
+            needs_sync = self.file_tracker.needs_sync(filepath)
+            last_sync = self.file_tracker.tracking_data.get(filepath, {}).get('last_sync_time', 'Never')
+            
+            status[filepath] = {
+                'needs_sync': needs_sync,
+                'last_sync': last_sync
+            }
+            
+        return status
+
+    def sync_files(self, dry_run: bool = False):
+        status = self.get_sync_status()
+        files_to_sync = [f for f, s in status.items() if s['needs_sync']]
+        
+        if dry_run:
+            print(f"Would sync {len(files_to_sync)} files:")
+            for filepath in files_to_sync:
+                print(f"  {filepath}")
+            return
+        
+        for filepath in files_to_sync:
+            try:
+                print(f"Syncing {filepath}...")
+                self.api_client.upload_file(filepath)
+                self.file_tracker.update_file_sync(filepath)
+                print(f"Successfully synced {filepath}")
+            except Exception as e:
+                print(f"Error syncing {filepath}: {e}")
+'''
+    write_file('src/claude_sync/core/syncer.py', syncer_content)
+
+    # Write ignore parser
+    ignore_parser_content = '''import os
+import fnmatch
+from typing import List
+
+class GitignoreParser:
+    def __init__(self, ignore_file: str = ".syncignore"):
+        self.ignore_file = ignore_file
+        self.patterns = self._load_patterns()
+
+    def _load_patterns(self) -> List[str]:
+        if os.path.exists(self.ignore_file):
+            with open(self.ignore_file, 'r') as f:
+                return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        return []
+
+    def should_ignore(self, filepath: str) -> bool:
+        for pattern in self.patterns:
+            if fnmatch.fnmatch(filepath, pattern):
+                return True
+        return False
+'''
+    write_file('src/claude_sync/utils/ignore_parser.py', ignore_parser_content)
+
+    # Write CLI main
+    cli_main_content = '''import argparse
+from claude_sync.core.syncer import FileSyncer
+
+def main():
+    parser = argparse.ArgumentParser(description='File sync utility for Claude API')
+    parser.add_argument('--status', action='store_true', help='Show sync status of all files')
+    parser.add_argument('--list-remote', action='store_true', help='List files on remote')
+    parser.add_argument('--sync', action='store_true', help='Sync files to remote')
+    parser.add_argument('--dry-run', action='store_true', help='Show what would be synced without actually syncing')
+    
+    args = parser.parse_args()
+    
+    syncer = FileSyncer()
+    
+    if args.status:
+        status = syncer.get_sync_status()
+        print("\\nFile Status:")
+        for filepath, info in status.items():
+            print(f"{filepath}:")
+            print(f"  Needs sync: {info['needs_sync']}")
+            print(f"  Last sync: {info['last_sync']}")
+            print()
+    
+    elif args.list_remote:
+        remote_files = syncer.api_client.list_remote_files()
+        print("\\nRemote Files:")
+        for file in remote_files:
+            print(f"  {file['file_name']}")
+    
+    elif args.sync or args.dry_run:
+        syncer.sync_files(dry_run=args.dry_run)
+    
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
+'''
+    write_file('src/claude_sync/cli/main.py', cli_main_content)
+
+    # Write setup.py
+    setup_content = '''from setuptools import setup, find_packages
+
+setup(
+    name="claude-sync",
+    version="0.1.0",
+    packages=find_packages(where="src"),
+    package_dir={"": "src"},
+    install_requires=[
+        "requests>=2.25.0"
+    ],
+    entry_points={
+        'console_scripts': [
+            'claude-sync=claude_sync.cli.main:main',
+        ],
+    },
+    author="Your Name",
+    author_email="your.email@example.com",
+    description="A file sync utility for Claude AI",
+    long_description=open("README.md").read(),
+    long_description_content_type="text/markdown",
+    url="https://github.com/yourusername/claude-sync",
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+    ],
+    python_requires=">=3.7",
+)
+'''
+    write_file('setup.py', setup_content)
+
+    # Write requirements.txt
+    requirements_content = 'requests>=2.25.0'
+    write_file('requirements.txt', requirements_content)
+
+    # Write README.md
+    readme_content = '''# Claude Sync
+
+A file synchronization utility for Claude AI projects.
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+1. First-time setup:
+```bash
+claude-sync --status
+```
+
+2. Create a `.syncignore` file:
+```
+*.pyc
+__pycache__/*
+.sync_*
+.git/*
+```
+
+3. Available commands:
+```bash
+# Show sync status of all files
+claude-sync --status
+
+# List files on remote
+claude-sync --list-remote
+
+# Show what would be synced (dry run)
+claude-sync --dry-run
+
+# Actually sync files
+claude-sync --sync
+```
+
+## Configuration
+
+The tool will create a `.sync_config.json` file on first run and prompt for:
+- Organization ID
+- Project ID
+- Base URL (defaults to https://claude.ai)
+- Session Key
+
+## License
+
+MIT License
+'''
+    write_file('README.md', readme_content)
+
+    # Create a default .syncignore file
+    syncignore_content = '''*.pyc
+__pycache__/*
+.sync_*
+.git/*
+.env
+*.egg-info
+dist/
+build/
+'''
+    write_file('.syncignore', syncignore_content)
+
+if __name__ == '__main__':
+    create_project_structure()
+    print("\nProject structure created successfully!")
+    print("To install the package in development mode, run: pip install -e .")
+
+################################################################################
+
+################################################################################
+# File Path: setup.py
+# File Content:
+----------------------------------------
+
+from setuptools import setup, find_packages
+
+setup(
+    name="claude-sync",
+    version="0.1.0",
+    packages=find_packages(where="src"),
+    package_dir={"": "src"},
+    install_requires=[
+        "requests>=2.25.0",
+        "pyperclip>=1.8.0"
+    ],
+    entry_points={
+        'console_scripts': [
+            'claude-sync=claude_sync.cli.main:main',
+        ],
+    },
+    author="Your Name",
+    author_email="your.email@example.com",
+    description="A file sync utility for Claude AI",
+    long_description=open("README.md").read(),
+    long_description_content_type="text/markdown",
+    url="https://github.com/yourusername/claude-sync",
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+    ],
+    python_requires=">=3.7",
+)
+
+
+################################################################################
+
+################################################################################
+# File Path: file_sync/src/claude_sync/core/syncer.py
+# File Content:
+----------------------------------------
+
+import os
+from typing import Dict, Set, Tuple
+from datetime import datetime
+from claude_sync.api.client import APIClient
+from claude_sync.core.config_manager import ConfigManager
+from claude_sync.utils.ignore_parser import GitignoreParser
+
+class FileSyncer:
+    def __init__(self, debug: bool = False):
+        self.debug = debug
+        self.config_manager = ConfigManager()
+        self.ignore_parser = GitignoreParser()
+        self.config = self.config_manager._load_config()
+        self.api_client = APIClient(self.config)
+
+    def get_local_files(self) -> Dict[str, float]:
+        """Get local files with their modification timestamps"""
+        files = {}
+        
+        if self.debug:
+            print("\nDebug: Scanning local files...")
+            
+        for root, _, filenames in os.walk('.'):
+            for filename in filenames:
+                filepath = os.path.relpath(os.path.join(root, filename))
+                if not self.ignore_parser.should_ignore(filepath):
+                    mtime = os.path.getmtime(filepath)
+                    files[filepath] = mtime
+                    if self.debug:
+                        print(f"  {filepath}: {datetime.fromtimestamp(mtime)}")
+                        
+        return files
+
+    def get_sync_status(self) -> Tuple[Dict[str, dict], Dict[str, dict]]:
+        """Get sync status comparing local and remote state"""
+        local_files = self.get_local_files()
+        remote_files = self.api_client.list_remote_files()
+
+        # Index remote files by their name/path
+        if self.debug:
+            print("\nDebug: Remote files response:")
+            print(remote_files)
+            
+        remote_state = {}
+        for file in remote_files:
+            local_path = file['file_name']
+            remote_state[local_path] = {
+                'id': file['uuid'],
+                'updated_at': file['created_at']
+            }
+
+        # Track files to sync and remote files to delete
+        sync_status = {}
+        delete_status = {}
+
+        # Check local files that need syncing
+        for filepath, local_mtime in local_files.items():
+            remote_info = remote_state.get(filepath)
+            
+            if not remote_info:
+                # File doesn't exist remotely
+                sync_status[filepath] = {
+                    'needs_sync': True,
+                    'last_sync': 'Never',
+                    'action': 'upload'
+                }
+            else:
+                remote_time = datetime.fromisoformat(remote_info['updated_at'].replace('Z', '+00:00'))
+                local_time = datetime.fromtimestamp(local_mtime)
+                
+                if local_time > remote_time:
+                    sync_status[filepath] = {
+                        'needs_sync': True,
+                        'last_sync': remote_info['updated_at'],
+                        'action': 'replace',
+                        'remote_id': remote_info['id']
+                    }
+                else:
+                    sync_status[filepath] = {
+                        'needs_sync': False,
+                        'last_sync': remote_info['updated_at'],
+                        'action': None
+                    }
+
+        # Check remote files that need deletion
+        for remote_file in remote_files:
+            local_path = remote_file['file_name']
+            if local_path not in local_files:
+                delete_status[local_path] = {
+                    'id': remote_file['uuid'],
+                    'last_updated': remote_file['created_at']
+                }
+
+        return sync_status, delete_status
+
+    def sync_files(self, dry_run: bool = False):
+        """Sync files that need updating and clean up orphaned remote files"""
+        sync_status, delete_status = self.get_sync_status()
+        files_to_sync = {f: s for f, s in sync_status.items() if s['needs_sync']}
+        
+        # Track operation counts for summary
+        summary = {
+            'uploaded': 0,
+            'replaced': 0,
+            'deleted': 0,
+            'failed': 0,
+            'skipped': len(sync_status) - len(files_to_sync),
+            'errors': []
+        }
+        
+        if dry_run:
+            print(f"\nWould perform the following operations:")
+            
+            if files_to_sync:
+                print("\nFiles to sync:")
+                for filepath, info in files_to_sync.items():
+                    action = "Upload new file" if info['action'] == 'upload' else "Replace existing file"
+                    print(f"  {filepath} - {action}")
+            
+            if delete_status:
+                print("\nRemote files to delete:")
+                for filepath in delete_status:
+                    print(f"  {filepath}")
+                    
+            return
+        
+        # First, handle file uploads and replacements
+        for filepath, info in files_to_sync.items():
+            try:
+                print(f"\nSyncing {filepath}...")
+                
+                # If replacing, delete old file first
+                if info['action'] == 'replace':
+                    print(f"  Deleting old remote version...")
+                    self.api_client.delete_file(info['remote_id'])
+                
+                # Upload new version
+                print(f"  Uploading new version...")
+                self.api_client.upload_file(filepath, local_path=filepath)
+                print(f"Successfully synced {filepath}")
+                
+                # Update summary
+                if info['action'] == 'upload':
+                    summary['uploaded'] += 1
+                else:
+                    summary['replaced'] += 1
+                    
+            except Exception as e:
+                error_msg = f"Error syncing {filepath}: {str(e)}"
+                print(error_msg)
+                summary['failed'] += 1
+                summary['errors'].append(error_msg)
+
+        # Then, clean up orphaned remote files
+        if delete_status:
+            print("\nCleaning up remote files...")
+            for filepath, info in delete_status.items():
+                try:
+                    print(f"  Deleting {filepath}...")
+                    self.api_client.delete_file(info['id'])
+                    summary['deleted'] += 1
+                except Exception as e:
+                    error_msg = f"Error deleting {filepath}: {str(e)}"
+                    print(error_msg)
+                    summary['failed'] += 1
+                    summary['errors'].append(error_msg)
+
+        # Print summary
+        print("\nSync Summary:")
+        print(f"  {summary['uploaded']} files uploaded")
+        print(f"  {summary['replaced']} files replaced")
+        print(f"  {summary['deleted']} remote files deleted")
+        print(f"  {summary['skipped']} files skipped (up to date)")
+        print(f"  {summary['failed']} operations failed")
+        
+        if summary['errors']:
+            print("\nErrors encountered:")
+            for error in summary['errors']:
+                print(f"  {error}")
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/__init__.py
+# File Content:
+----------------------------------------
+
+from claude_sync.core.syncer import FileSyncer
+
+__version__ = "0.1.0"
+__all__ = ["FileSyncer"]
+
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/core/syncer.py
+# File Content:
+----------------------------------------
+
+import os
+from typing import Dict, Set, Tuple
+from datetime import datetime
+from claude_sync.api.client import APIClient
+from claude_sync.core.config_manager import ConfigManager
+from claude_sync.utils.ignore_parser import GitignoreParser
+
+class FileSyncer:
+    def __init__(self, debug: bool = False):
+        self.debug = debug
+        self.config_manager = ConfigManager()
+        self.ignore_parser = GitignoreParser()
+        self.config = self.config_manager._load_config()
+        self.api_client = APIClient(self.config)
+
+    def get_local_files(self) -> Dict[str, float]:
+        """Get local files with their modification timestamps"""
+        files = {}
+        
+        if self.debug:
+            print("\nDebug: Scanning local files...")
+            
+        for root, _, filenames in os.walk('.'):
+            for filename in filenames:
+                filepath = os.path.relpath(os.path.join(root, filename))
+                if not self.ignore_parser.should_ignore(filepath):
+                    mtime = os.path.getmtime(filepath)
+                    files[filepath] = mtime
+                    if self.debug:
+                        print(f"  {filepath}: {datetime.fromtimestamp(mtime)}")
+                        
+        return files
+
+    def get_sync_status(self) -> Tuple[Dict[str, dict], Dict[str, dict]]:
+        """Get sync status comparing local and remote state"""
+        local_files = self.get_local_files()
+        remote_files = self.api_client.list_remote_files()
+
+        # Index remote files by their name/path
+        remote_state = {}
+        for file in remote_files:
+            # Try to get local path from metadata, fallback to filename
+            local_path = file.get('metadata', {}).get('local_path', file['file_name'])
+            remote_state[local_path] = {
+                'id': file['id'],
+                'updated_at': file.get('updated_at', file.get('created_at')),
+            }
+
+        # Track files to sync and remote files to delete
+        sync_status = {}
+        delete_status = {}
+
+        # Check local files that need syncing
+        for filepath, local_mtime in local_files.items():
+            remote_info = remote_state.get(filepath)
+            
+            if not remote_info:
+                # File doesn't exist remotely
+                sync_status[filepath] = {
+                    'needs_sync': True,
+                    'last_sync': 'Never',
+                    'action': 'upload'
+                }
+            else:
+                remote_time = datetime.fromisoformat(remote_info['updated_at'].replace('Z', '+00:00'))
+                local_time = datetime.fromtimestamp(local_mtime)
+                
+                if local_time > remote_time:
+                    sync_status[filepath] = {
+                        'needs_sync': True,
+                        'last_sync': remote_info['updated_at'],
+                        'action': 'replace',
+                        'remote_id': remote_info['id']
+                    }
+                else:
+                    sync_status[filepath] = {
+                        'needs_sync': False,
+                        'last_sync': remote_info['updated_at'],
+                        'action': None
+                    }
+
+        # Check remote files that need deletion
+        for remote_file in remote_files:
+            local_path = remote_file['local_path']
+            if local_path not in local_files:
+                delete_status[local_path] = {
+                    'id': remote_file['id'],
+                    'last_updated': remote_file.get('updated_at', remote_file.get('created_at'))
+                }
+
+        return sync_status, delete_status
+
+    def sync_files(self, dry_run: bool = False):
+        """Sync files that need updating and clean up orphaned remote files"""
+        sync_status, delete_status = self.get_sync_status()
+        files_to_sync = {f: s for f, s in sync_status.items() if s['needs_sync']}
+        
+        # Track operation counts for summary
+        summary = {
+            'uploaded': 0,
+            'replaced': 0,
+            'deleted': 0,
+            'failed': 0,
+            'skipped': len(sync_status) - len(files_to_sync),
+            'errors': []
+        }
+        
+        if dry_run:
+            print(f"\nWould perform the following operations:")
+            
+            if files_to_sync:
+                print("\nFiles to sync:")
+                for filepath, info in files_to_sync.items():
+                    action = "Upload new file" if info['action'] == 'upload' else "Replace existing file"
+                    print(f"  {filepath} - {action}")
+            
+            if delete_status:
+                print("\nRemote files to delete:")
+                for filepath in delete_status:
+                    print(f"  {filepath}")
+                    
+            return
+        
+        # First, handle file uploads and replacements
+        for filepath, info in files_to_sync.items():
+            try:
+                print(f"\nSyncing {filepath}...")
+                
+                # If replacing, delete old file first
+                if info['action'] == 'replace':
+                    print(f"  Deleting old remote version...")
+                    self.api_client.delete_file(info['remote_id'])
+                
+                # Upload new version
+                print(f"  Uploading new version...")
+                self.api_client.upload_file(filepath, local_path=filepath)
+                print(f"Successfully synced {filepath}")
+                
+                # Update summary
+                if info['action'] == 'upload':
+                    summary['uploaded'] += 1
+                else:
+                    summary['replaced'] += 1
+                    
+            except Exception as e:
+                error_msg = f"Error syncing {filepath}: {str(e)}"
+                print(error_msg)
+                summary['failed'] += 1
+                summary['errors'].append(error_msg)
+
+        # Then, clean up orphaned remote files
+        if delete_status:
+            print("\nCleaning up remote files...")
+            for filepath, info in delete_status.items():
+                try:
+                    print(f"  Deleting {filepath}...")
+                    self.api_client.delete_file(info['id'])
+                    summary['deleted'] += 1
+                except Exception as e:
+                    error_msg = f"Error deleting {filepath}: {str(e)}"
+                    print(error_msg)
+                    summary['failed'] += 1
+                    summary['errors'].append(error_msg)
+
+        # Print summary
+        print("\nSync Summary:")
+        print(f"  {summary['uploaded']} files uploaded")
+        print(f"  {summary['replaced']} files replaced")
+        print(f"  {summary['deleted']} remote files deleted")
+        print(f"  {summary['skipped']} files skipped (up to date)")
+        print(f"  {summary['failed']} operations failed")
+        
+        if summary['errors']:
+            print("\nErrors encountered:")
+            for error in summary['errors']:
+                print(f"  {error}")
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/core/config_manager.py
+# File Content:
+----------------------------------------
+
+import json
+import os
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, Optional
+
+class ConfigManager:
+    def __init__(self, config_path: str = ".sync_config.json"):
+        self.config_path = config_path
+        self.global_config_path = os.path.expanduser("~/.claude-sync.config")
+        self.config = self._load_config()
+
+    def _load_global_session(self) -> Optional[str]:
+        """Load session key from global config if valid"""
+        if os.path.exists(self.global_config_path):
+            try:
+                with open(self.global_config_path, 'r') as f:
+                    global_config = json.load(f)
+                
+                # Get session info for Claude AI
+                session_info = global_config.get("https://claude.ai", {})
+                if session_info:
+                    # Check expiration
+                    expiration = datetime.fromisoformat(session_info.get('expiration', '2000-01-01'))
+                    if datetime.now() < expiration:
+                        return session_info.get('session_key')
+            except Exception as e:
+                print(f"Warning: Error reading global config: {e}")
+        return None
+
+    def _load_config(self) -> Dict:
+        """Load or create config with session key"""
+        if os.path.exists(self.config_path):
+            with open(self.config_path, 'r') as f:
+                config = json.load(f)
+        else:
+            config = self._create_initial_config()
+        
+        # Try to get session key from global config
+        if 'session_key' not in config:
+            global_session = self._load_global_session()
+            if global_session:
+                config['session_key'] = global_session
+                self._save_config(config)
+            else:
+                config['session_key'] = input("Session Key: ").strip()
+                self._save_config(config)
+            
+        return config
+
+    def _save_config(self, config: Dict):
+        """Save config to file"""
+        with open(self.config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+    def _create_initial_config(self) -> Dict:
+        """Create initial config file"""
+        print("No config file found. Please provide the following information:")
+        
+        config = {
+            'organization_id': input("Organization ID: ").strip(),
+            'project_id': input("Project ID: ").strip(),
+            'base_url': input("Base URL (default: https://claude.ai): ").strip() or "https://claude.ai",
+        }
+        
+        # Try to get session key from global config
+        global_session = self._load_global_session()
+        if global_session:
+            config['session_key'] = global_session
+        else:
+            config['session_key'] = input("Session Key: ").strip()
+        
+        self._save_config(config)
+        print(f"Config file created at {self.config_path}")
+        return config
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/core/__init__.py
+# File Content:
+----------------------------------------
+
+
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/core/file_tracker.py
+# File Content:
+----------------------------------------
+
+import json
+import os
+import hashlib
+from datetime import datetime
+from typing import Dict
+
+class FileTracker:
+    def __init__(self, track_file: str = ".sync_track.json"):
+        self.track_file = track_file
+        self.tracking_data = self._load_tracking_data()
+
+    def _load_tracking_data(self) -> Dict:
+        if os.path.exists(self.track_file):
+            with open(self.track_file, 'r') as f:
+                return json.load(f)
+        return {}
+
+    def _save_tracking_data(self):
+        with open(self.track_file, 'w') as f:
+            json.dump(self.tracking_data, f, indent=2)
+
+    def get_file_hash(self, filepath: str) -> str:
+        with open(filepath, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()
+
+    def update_file_sync(self, filepath: str, sync_status: bool = True):
+        self.tracking_data[filepath] = {
+            'last_sync_time': datetime.now().isoformat(),
+            'last_hash': self.get_file_hash(filepath),
+            'sync_status': sync_status
+        }
+        self._save_tracking_data()
+
+    def needs_sync(self, filepath: str) -> bool:
+        if filepath not in self.tracking_data:
+            return True
+        
+        current_hash = self.get_file_hash(filepath)
+        return current_hash != self.tracking_data[filepath]['last_hash']
+
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/utils/clipboard_parser.py
+# File Content:
+----------------------------------------
+
+import re
+import pyperclip
+from typing import Optional, Tuple
+
+class ClipboardParser:
+    @staticmethod
+    def extract_session_key_from_curl() -> Tuple[Optional[str], str]:
+        """
+        Extract session key from a curl command in clipboard.
+        Returns (key, status) where:
+        - key is the extracted session key or None
+        - status is 'same', 'new', or 'none' to indicate what was found
+        """
+        try:
+            clipboard_content = pyperclip.paste()
+            
+            # Check if it's a curl command
+            if not clipboard_content.strip().lower().startswith('curl'):
+                return None, 'none'
+                
+            # Look for session key patterns
+            patterns = [
+                # Cookie header pattern
+                r'["\']Cookie:\s*sessionKey=([^;"\']+)["\']',
+                # -b/--cookie pattern
+                r'-b[= ]["\']sessionKey=([^;"\']+)["\']',
+                r'--cookie[= ]["\']sessionKey=([^;"\']+)["\']',
+                # Raw cookie in URL
+                r'sessionKey=([^&;"\']+)',
+            ]
+            
+            for pattern in patterns:
+                matches = re.finditer(pattern, clipboard_content, re.IGNORECASE)
+                for match in matches:
+                    key = match.group(1)
+                    if key.startswith('sk-ant-'):
+                        return key, 'new'
+                    
+            return None, 'none'
+            
+        except Exception as e:
+            print(f"Error reading clipboard: {e}")
+            return None, 'none'
+    
+    @staticmethod
+    def prompt_for_curl():
+        """Display instructions for getting the curl command."""
+        print("\nPlease follow these steps to get a fresh session key:")
+        print("1. Open Chrome DevTools (F12 or Command+Option+I)")
+        print("2. Go to the Network tab")
+        print("3. Visit or refresh claude.ai")
+        print("4. Find any recent request (e.g. 'chat' or 'account_profile')")
+        print("5. Right-click the request -> Copy -> Copy as cURL")
+        print("6. Paste the copied curl command in your clipboard")
+        print("\nMake sure to copy a fresh request to get a valid session key.")
+        print("Press Enter when ready...")
+        input()
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/utils/ignore_parser.py
+# File Content:
+----------------------------------------
+
+import os
+import fnmatch
+from typing import List, Tuple
+
+class GitignoreParser:
+    def __init__(self, ignore_file: str = ".syncignore"):
+        self.ignore_file = ignore_file
+        self.patterns = self._load_patterns()
+
+    def _load_patterns(self) -> List[Tuple[bool, str]]:
+        """Load patterns as tuples of (is_include, pattern)"""
+        patterns = []
+        if os.path.exists(self.ignore_file):
+            with open(self.ignore_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        is_include = line.startswith('!')
+                        pattern = line[1:] if is_include else line
+                        
+                        # Ensure folder patterns match full path
+                        if not pattern.endswith('/*') and not pattern.endswith('/**'):
+                            if os.path.sep in pattern:  # If it's a path
+                                pattern = f"{pattern}/**"  # Match all contents
+                            
+                        patterns.append((is_include, pattern))
+        return patterns
+
+    def should_ignore(self, filepath: str) -> bool:
+        """
+        Determine if a file should be ignored.
+        Returns True if the file should be ignored, False if it should be included.
+        """
+        if not self.patterns:
+            return False
+
+        # Start with default from first pattern
+        # If first pattern is a negation, default to exclude
+        should_exclude = True
+
+        # Normalize path separators
+        filepath = filepath.replace('\\', '/')
+        
+        for is_include, pattern in self.patterns:
+            # Handle both exact directory matches and wildcard patterns
+            if fnmatch.fnmatch(filepath, pattern) or \
+               fnmatch.fnmatch(filepath, f"{pattern}/*") or \
+               fnmatch.fnmatch(filepath, pattern.rstrip('/*')):
+                should_exclude = not is_include
+                
+        return should_exclude
+
+    def debug_patterns(self) -> List[str]:
+        """Return loaded patterns for debugging"""
+        return [f"{'Include' if is_include else 'Exclude'}: {pattern}" 
+                for is_include, pattern in self.patterns]
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/utils/__init__.py
+# File Content:
+----------------------------------------
+
+
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/cli/__init__.py
+# File Content:
+----------------------------------------
+
+
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/cli/main.py
+# File Content:
+----------------------------------------
+
+import argparse
+from claude_sync.core.syncer import FileSyncer
+from datetime import datetime
+
+def format_time(time_str: str) -> str:
+    """Format time string to be more readable"""
+    if time_str == 'Never':
+        return time_str
+    try:
+        dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    except:
+        return time_str
+
+def main():
+    parser = argparse.ArgumentParser(description='File sync utility for Claude API')
+    parser.add_argument('--status', action='store_true', help='Show sync status of all files')
+    parser.add_argument('--list-remote', action='store_true', help='List files on remote')
+    parser.add_argument('--sync', action='store_true', help='Sync files to remote')
+    parser.add_argument('--dry-run', action='store_true', help='Show what would be synced without actually syncing')
+    parser.add_argument('--debug', action='store_true', help='Show debug information')
+    
+    args = parser.parse_args()
+    
+    syncer = FileSyncer(debug=args.debug)
+    
+    if args.status:
+        status = syncer.get_sync_status()
+        
+        # Count statistics
+        total_files = len(status)
+        needs_sync = sum(1 for info in status.values() if info['needs_sync'])
+        up_to_date = total_files - needs_sync
+        
+        # Print file statuses in a single line each
+        print("\nFile Status:")
+        for filepath, info in sorted(status.items()):
+            last_sync = format_time(info['last_sync'])
+            sync_status = "Needs sync" if info['needs_sync'] else "Up to date"
+            print(f"{filepath:<50} {sync_status:<15} Last sync: {last_sync}")
+        
+        # Print summary
+        print(f"\nSummary:")
+        print(f"Total files: {total_files}")
+        print(f"Need sync:   {needs_sync}")
+        print(f"Up to date:  {up_to_date}")
+    
+    elif args.list_remote:
+        remote_files = syncer.api_client.list_remote_files()
+        
+        if not remote_files:
+            print("\nNo files found on remote.")
+            return
+            
+        # Print table header
+        print("\nRemote Files:")
+        print(f"{'File Name':<40} {'Created At':<25}")
+        print("-" * 65)
+        
+        # Sort files by name for consistent display
+        for file in sorted(remote_files, key=lambda x: x['file_name']):
+            created_at = format_time(file['created_at'])
+            print(f"{file['file_name']:<40} {created_at}")
+            
+        # Print summary
+        print(f"\nTotal files: {len(remote_files)}")
+    
+    elif args.sync or args.dry_run:
+        syncer.sync_files(dry_run=args.dry_run)
+    
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/api/client.py
+# File Content:
+----------------------------------------
+
+import os
+from typing import List, Dict
+from curl_cffi import requests as curl_requests
+
+class APIClient:
+    def __init__(self, config: dict):
+        self.config = config
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://claude.ai/chats',
+            'Content-Type': 'application/json',
+            'Origin': 'https://claude.ai',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Cookie': f'sessionKey={config["session_key"]}',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'TE': 'trailers'
+        }
+        # Common request parameters
+        self.request_params = {
+            'headers': self.headers,
+            'impersonate': "chrome110",
+            'verify': False  # Disable SSL verification
+        }
+
+    def upload_file(self, filepath: str, local_path: str = None) -> dict:
+        """Upload a file to Claude"""
+        url = f"{self.config['base_url']}/api/organizations/{self.config['organization_id']}/projects/{self.config['project_id']}/docs"
+        
+        with open(filepath, 'r') as f:
+            content = f.read()
+            
+        data = {
+            "file_name": filepath,  # Use full filepath to preserve structure
+            "content": content,
+            "project_uuid": self.config['project_id']
+        }
+        
+        response = curl_requests.post(
+            url, 
+            json=data,
+            **self.request_params
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def delete_file(self, file_id: str) -> None:
+        """Delete a file from Claude"""
+        url = f"{self.config['base_url']}/api/organizations/{self.config['organization_id']}/projects/{self.config['project_id']}/docs/{file_id}"
+        
+        data = {
+            "docUuid": file_id
+        }
+        
+        response = curl_requests.delete(
+            url,
+            json=data,
+            **self.request_params
+        )
+        response.raise_for_status()
+
+    def list_remote_files(self) -> List[dict]:
+        """List remote files including metadata."""
+        url = f"{self.config['base_url']}/api/organizations/{self.config['organization_id']}/projects/{self.config['project_id']}/docs"
+        
+        response = curl_requests.get(
+            url, 
+            **self.request_params
+        )
+        
+        if response.status_code == 403:
+            print("\nAuthentication failed. Session key may have expired.")
+            print("Please get a new session key by:")
+            print("1. Opening Chrome")
+            print("2. Going to claude.ai")
+            print("3. Opening DevTools (F12)")
+            print("4. Going to Network tab")
+            print("5. Finding a request (like 'organizations')")
+            print("6. Looking for the 'sessionKey' cookie value")
+            raise Exception("Invalid or expired session key")
+            
+        response.raise_for_status()
+        return response.json()
+
+################################################################################
+
+################################################################################
+# File Path: src/claude_sync/api/__init__.py
+# File Content:
+----------------------------------------
+
+
+
+################################################################################
+
