@@ -32,18 +32,23 @@ def main():
         needs_sync = sum(1 for info in sync_status.values() if info['needs_sync'])
         up_to_date = total_files - needs_sync
         
-        # Print file statuses in a single line each
+        # Print file statuses in a table format
         print("\nLocal File Status:")
+        
+        # Headers with status first, then last sync time, then filename
+        print(f"{'Status':<15} {'Last Sync':<25} File")
+        print("-" * 80)  # Table separator
+        
         for filepath, info in sorted(sync_status.items()):
             last_sync = format_time(info['last_sync'])
             sync_state = "Needs sync" if info['needs_sync'] else "Up to date"
-            print(f"{filepath:<50} {sync_state:<15} Last sync: {last_sync}")
+            print(f"{sync_state:<15} {last_sync:<25} {filepath}")
         
         # Print files to be deleted if any
         if delete_status:
             print("\nRemote Files to Delete:")
             for filepath in sorted(delete_status.keys()):
-                print(f"{filepath}")
+                print(f"  {filepath}")
         
         # Print summary
         print(f"\nSummary:")
@@ -62,13 +67,13 @@ def main():
             
         # Print table header
         print("\nRemote Files:")
-        print(f"{'File Name':<40} {'Created At':<25}")
+        print(f"{'Created At':<25} File Name")
         print("-" * 65)
         
         # Sort files by name for consistent display
         for file in sorted(remote_files, key=lambda x: x['file_name']):
             created_at = format_time(file['created_at'])
-            print(f"{file['file_name']:<40} {created_at}")
+            print(f"{created_at:<25} {file['file_name']}")
             
         # Print summary
         print(f"\nTotal files: {len(remote_files)}")
