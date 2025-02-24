@@ -98,22 +98,23 @@ class ConfigManager:
         if os.path.exists(self.config_path):
             with open(self.config_path, 'r') as f:
                 config = json.load(f)
+                # Remove session key if it exists in project config
+                if 'session_key' in config:
+                    del config['session_key']
+                    self._save_config(config)
         else:
-            config = self._create_initial_config(session_key, default_org_id)
+            config = self._create_initial_config(default_org_id)
         
-        # Update session key if needed
-        if 'session_key' not in config or config['session_key'] != session_key:
-            config['session_key'] = session_key
-            self._save_config(config)
+        # Add session key from global config to the running config (but don't save it)
+        config['session_key'] = session_key
             
         return config
 
-    def _create_initial_config(self, session_key: str, default_org_id: str) -> Dict:
+    def _create_initial_config(self, default_org_id: str) -> Dict:
         """Create initial project config file"""
         print("\nNo project config file found. Creating new configuration...")
         
         config = {
-            'session_key': session_key,
             'base_url': input("Base URL (default: https://claude.ai): ").strip() or "https://claude.ai",
         }
         
@@ -135,5 +136,10 @@ class ConfigManager:
 
     def _save_config(self, config: Dict):
         """Save project config to file"""
+        # Create a copy of the config without the session key
+        project_config = config.copy()
+        if 'session_key' in project_config:
+            del project_config['session_key']
+            
         with open(self.config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+            json.dump(project_config, f, indent=2)
