@@ -96,11 +96,28 @@ class ConfigManager:
         
         # Now handle project-specific config
         if os.path.exists(self.config_path):
-            with open(self.config_path, 'r') as f:
-                config = json.load(f)
-                # Remove session key if it exists in project config
-                if 'session_key' in config:
-                    del config['session_key']
+            try:
+                with open(self.config_path, 'r') as f:
+                    config = json.load(f)
+                    # Remove session key if it exists in project config
+                    if 'session_key' in config:
+                        del config['session_key']
+                        self._save_config(config)
+            except ValueError as e:
+                if "Invalid organization ID format" in str(e):
+                    print("\nInvalid organization ID detected in config.")
+                    print("Current organization ID:", config.get('organization_id'))
+                    print("\nWould you like to:")
+                    print("1. Use the default organization ID from global config")
+                    print("2. Enter a new organization ID")
+                    choice = input("\nEnter choice (1/2): ").strip()
+                    
+                    if choice == '1':
+                        config['organization_id'] = default_org_id
+                    else:
+                        print("\nPlease enter the new organization ID.")
+                        config['organization_id'] = input("Organization ID: ").strip()
+                    
                     self._save_config(config)
         else:
             config = self._create_initial_config(default_org_id)
@@ -110,9 +127,76 @@ class ConfigManager:
             
         return config
 
+    def _create_default_syncignore(self):
+        """Create default .syncignore file with common ignore patterns"""
+        default_ignores = """\
+# Version Control
+.git/
+.gitignore
+.svn/
+.hg/
+
+# IDE and Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Build and Dependency Directories
+target/
+dist/
+build/
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+*.class
+
+# Package Files
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Logs and Databases
+*.log
+*.sqlite
+*.db
+
+# Environment and Config
+.env
+.env.*
+*.local
+.local/
+
+# Project specific files
+.sync_config.json
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+"""
+        
+        if not os.path.exists('.syncignore'):
+            with open('.syncignore', 'w') as f:
+                f.write(default_ignores)
+            print("Created default .syncignore file")
+
     def _create_initial_config(self, default_org_id: str) -> Dict:
         """Create initial project config file"""
         print("\nNo project config file found. Creating new configuration...")
+        
+        # Create default .syncignore file
+        self._create_default_syncignore()
         
         config = {
             'base_url': input("Base URL (default: https://claude.ai): ").strip() or "https://claude.ai",
