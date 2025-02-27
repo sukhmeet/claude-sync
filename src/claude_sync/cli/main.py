@@ -1,6 +1,9 @@
+# Update to src/claude_sync/cli/main.py
+
 import argparse
 from claude_sync.core.syncer import FileSyncer
 from datetime import datetime
+import os
 
 def format_time(time_str: str) -> str:
     """Format time string to be more readable"""
@@ -26,6 +29,10 @@ def main():
     
     if args.status:
         sync_status, delete_status = syncer.get_sync_status()
+        
+        # If first run, just exit since the summary was already shown
+        if syncer.first_run or not sync_status:
+            return
         
         # Count statistics
         total_files = len(sync_status)
@@ -59,6 +66,11 @@ def main():
             print(f"To delete:    {len(delete_status)}")
     
     elif args.list_remote:
+        # If first run, just handle the first-run scenario in get_sync_status
+        if syncer.first_run:
+            syncer.get_sync_status()
+            return
+            
         remote_files = syncer.api_client.list_remote_files()
         
         if not remote_files:
@@ -81,6 +93,11 @@ def main():
     elif args.sync or args.dry_run:
         # Get sync status first
         sync_status, delete_status = syncer.get_sync_status()
+        
+        # If first run, just exit since the summary was already shown
+        if syncer.first_run or not sync_status:
+            return
+            
         files_to_sync = {f: s for f, s in sync_status.items() if s['needs_sync']}
         
         # Show what will be synced

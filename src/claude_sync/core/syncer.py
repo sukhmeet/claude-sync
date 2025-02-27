@@ -1,6 +1,9 @@
+# Update to src/claude_sync/core/syncer.py
+
 import os
-from typing import Dict, Set, Tuple
+from typing import Dict, Set, Tuple, Counter
 from datetime import datetime
+import collections
 from claude_sync.api.client import APIClient
 from claude_sync.core.config_manager import ConfigManager
 from claude_sync.utils.ignore_parser import GitignoreParser
@@ -12,6 +15,7 @@ class FileSyncer:
         self.ignore_parser = GitignoreParser()
         self.config = self.config_manager._load_config()
         self.api_client = APIClient(self.config)
+        self.first_run = not os.path.exists('.syncignore')
 
     def get_local_files(self) -> Dict[str, float]:
         """Get local files with their modification timestamps"""
@@ -30,10 +34,42 @@ class FileSyncer:
                         print(f"  {filepath}: {datetime.fromtimestamp(mtime)}")
                         
         return files
+    
+    def get_file_extensions_summary(self, files: Dict[str, float]) -> Dict[str, int]:
+        """Get summary of file extensions found"""
+        extensions = []
+        for filepath in files:
+            _, ext = os.path.splitext(filepath)
+            # If no extension, use "[no extension]"
+            ext = ext.lower() if ext else "[no extension]"
+            extensions.append(ext)
+        
+        # Count extensions
+        extension_counts = collections.Counter(extensions)
+        return extension_counts
 
     def get_sync_status(self) -> Tuple[Dict[str, dict], Dict[str, dict]]:
         """Get sync status comparing local and remote state"""
         local_files = self.get_local_files()
+        
+        # If this is the first run, create default .syncignore and show extensions summary
+        if self.first_run:
+            self.config_manager._create_default_syncignore()
+            extension_counts = self.get_file_extensions_summary(local_files)
+            
+            print("\nFirst run detected! Created default .syncignore file.")
+            print("\nFile extensions found in your project:")
+            
+            for ext, count in sorted(extension_counts.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {ext:<15} {count} files")
+                
+            print("\nNext run will use these ignore rules for syncing.")
+            print("You can modify .syncignore file to customize which files to sync.")
+            
+            # Return empty data to trigger exit
+            return {}, {}
+        
+        # Normal flow for subsequent runs
         remote_files = self.api_client.list_remote_files()
 
         if self.debug:
@@ -101,6 +137,11 @@ class FileSyncer:
     def sync_files(self, dry_run: bool = False):
         """Sync files that need updating and clean up orphaned remote files"""
         sync_status, delete_status = self.get_sync_status()
+        
+        # If first run (empty sync_status), just exit
+        if self.first_run or not sync_status:
+            return
+            
         files_to_sync = {f: s for f, s in sync_status.items() if s['needs_sync']}
         
         # Track operation counts for summary

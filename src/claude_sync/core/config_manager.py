@@ -1,5 +1,8 @@
+# Updated src/claude_sync/core/config_manager.py
+
 import json
 import os
+import pkg_resources
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
@@ -128,84 +131,69 @@ class ConfigManager:
         return config
 
     def _create_default_syncignore(self):
-        """Create default .syncignore file with common ignore patterns"""
-        default_ignores = """\
-# Version Control
-.git/
-.gitignore
-.svn/
-.hg/
-
-# IDE and Editor Files
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
-# Build and Dependency Directories
-target/
-dist/
-build/
-node_modules/
-vendor/
-__pycache__/
-*.pyc
-*.class
-
-# Package Files
-*.jar
-*.war
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
-# Logs and Databases
-*.log
-*.sqlite
-*.db
-
-# Environment and Config
-.env
-.env.*
-*.local
-.local/
-
-# Project specific files
-.sync_config.json
-
-# Operating System Files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-"""
-        
+        """Create default .syncignore file with patterns from the template file"""
         if not os.path.exists('.syncignore'):
+            # Get the path to the default template file
+            template_path = pkg_resources.resource_filename('claude_sync', 'data/.default_syncignore.txt')
+            
+            try:
+                # Try to read from the package resource
+                with open(template_path, 'r') as f:
+                    default_ignores = f.read()
+            except (FileNotFoundError, IOError):
+                # Fallback - look for the file in the current directory or project root
+                possible_paths = [
+                    '.default_syncignore.txt',
+                    os.path.join(os.path.dirname(__file__), '../../.default_syncignore.txt'),
+                    os.path.join(os.path.dirname(__file__), '../../../.default_syncignore.txt')
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        with open(path, 'r') as f:
+                            default_ignores = f.read()
+                        break
+                else:
+                    # Last resort - hardcoded minimal patterns
+                    default_ignores = """# Hidden files and directories
+.*
+!.gitignore
+!.syncignore
+
+# Common ignore patterns
+.git/
+__pycache__/
+*.py[cod]
+*.so
+*.class
+.DS_Store
+.env
+.sync_config.json
+"""
+            
+            # Write the ignore file
             with open('.syncignore', 'w') as f:
                 f.write(default_ignores)
             print("Created default .syncignore file")
+            
+        return not os.path.exists('.syncignore')
 
     def _create_initial_config(self, default_org_id: str) -> Dict:
         """Create initial project config file"""
         print("\nNo project config file found. Creating new configuration...")
         
-        # Create default .syncignore file
-        self._create_default_syncignore()
+        # Create default .syncignore file - note we don't create it here anymore
+        # as it's now handled on first run of sync or status
         
+        # Set default base URL without prompting
         config = {
-            'base_url': input("Base URL (default: https://claude.ai): ").strip() or "https://claude.ai",
+            'base_url': "https://claude.ai",
         }
         
         # Handle organization ID
         print(f"\nDefault organization ID: {default_org_id}")
         use_default = input("Use this organization ID for this project? [Y/n]: ").lower().strip()
-        if use_default != 'n':
+        if not use_default or use_default == 'y':
             config['organization_id'] = default_org_id
         else:
             print("Please enter the organization ID for this project:")
