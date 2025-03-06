@@ -22,8 +22,18 @@ def main():
     parser.add_argument('--sync', action='store_true', help='Sync files to remote')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be synced without actually syncing')
     parser.add_argument('--debug', action='store_true', help='Show debug information')
+    parser.add_argument('--show-ignores', action='store_true', help='Show loaded ignore patterns')
+
     
     args = parser.parse_args()
+
+    if args.show_ignores:
+        syncer = FileSyncer()
+        patterns = syncer.ignore_parser.debug_patterns()
+        print("\nLoaded ignore patterns:")
+        for pattern in patterns:
+            print(f"  {pattern}")
+        return
     
     syncer = FileSyncer(debug=args.debug)
     

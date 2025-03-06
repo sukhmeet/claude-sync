@@ -40,6 +40,7 @@ class ConfigManager:
     def _ensure_global_config(self) -> Tuple[str, str]:
         """
         Ensure global config exists with session key and default org ID.
+        Uses clipboard parser to extract session key from curl command.
         Returns (session_key, default_org_id)
         """
         session_key, default_org_id = self._load_global_session()
@@ -50,7 +51,29 @@ class ConfigManager:
             
             # Get session key if needed
             if not session_key:
-                session_key = input("Please enter your Claude session key: ").strip()
+                from claude_sync.utils.clipboard_parser import ClipboardParser
+                
+                # First try to get session key from clipboard
+                print("Checking clipboard for Claude session key...")
+                session_key_from_clipboard, status = ClipboardParser.extract_session_key_from_curl()
+                
+                if session_key_from_clipboard:
+                    print(f"Found session key in clipboard. Using: {session_key_from_clipboard[:10]}...")
+                    session_key = session_key_from_clipboard
+                else:
+                    # If not found, prompt user for curl command
+                    print("No session key found in clipboard.")
+                    ClipboardParser.prompt_for_curl()
+                    
+                    # Try again
+                    session_key_from_clipboard, status = ClipboardParser.extract_session_key_from_curl()
+                    if session_key_from_clipboard:
+                        print(f"Found session key in clipboard. Using: {session_key_from_clipboard[:10]}...")
+                        session_key = session_key_from_clipboard
+                    else:
+                        # Last resort - manual input
+                        print("Could not extract session key from clipboard.")
+                        session_key = input("Please enter your Claude session key manually: ").strip()
             
             # Always get default org ID if it doesn't exist
             if not default_org_id:
