@@ -56,9 +56,13 @@ class GitignoreParser:
             
             # Case 2: Pattern with trailing slash (directory only)
             if pattern.endswith('/'):
-                # For directories, check if the path starts with or contains the pattern
+                # For directories, check if the path starts with the pattern
                 dir_pattern = pattern[:-1]  # Remove trailing slash
-                if filepath == dir_pattern or filepath.startswith(f"{dir_pattern}/") or f"/{dir_pattern}/" in filepath:
+                
+                # More explicit check for files inside directory
+                if (filepath == dir_pattern or 
+                    filepath.startswith(f"{dir_pattern}/") or 
+                    f"/{dir_pattern}/" in filepath):
                     should_exclude = not is_include
                     continue
             

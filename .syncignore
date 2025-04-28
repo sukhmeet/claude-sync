@@ -1,0 +1,102 @@
+# Hidden files and directories (starting with .)
+.*
+!.gitignore
+.git
+
+# Python cache files
+__pycache__/
+**/*.pyc
+*.pyo
+*.pyd
+
+# Version Control
+.git/
+.gitignore
+.svn/
+.hg/
+*.idx
+*.pack
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite*
+
+# Config files
+*.sample
+*.yaml
+*.yml
+*.ini
+*.conf
+*.config
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+.history/
+
+# Remote Desktop
+*.rdp
+
+# Windows scripts
+*.bat
+*.cmd
+*.ps1
+
+# Build and Dependency Directories
+target/
+dist/
+build/
+**/node_modules/
+vendor/
+venv/
+*.so
+*.dylib
+*.dll
+**/*.class
+
+# Package Files
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+*.egg
+*.whl
+
+# Logs 
+*.log
+
+# Environment and Config
+.env
+.env.*
+*.local
+.local/
+venv/
+env/
+ENV/
+.venv/
+.python-version
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Backup files
+*~
+*.bak
+*.swp
+*.tmp
+
+# Project specific files
+.sync_config.json
+
+*.egg-info
+*.egg-info/
