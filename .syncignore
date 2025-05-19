@@ -96,7 +96,9 @@ site/
 *.tmp
 
 # Project specific files
-.sync_config.json
 
 *.egg-info
-*.egg-info/
+*.egg-info/ 
+
+build/
+claude/
